@@ -1,0 +1,208 @@
+#version 440 core
+#define LSIZEX 16
+layout (local_size_x = LSIZEX, local_size_y = LSIZEX + 3 / 4, local_size_z = 1 ) in;
+struct Varray
+{
+	vec4 col[1024];
+};
+layout(std430, binding=0) buffer Positionbuffer	{Varray position[1024];};
+layout(std430, binding=3) buffer Colors			{Varray mcolors[1024];};
+layout(std430, binding=2) buffer Computebuffer	{ 
+
+	vec3 camera;	float dmin;
+	vec3 raycam;	float dmax;
+	vec3 wx;		float steps;
+	vec3 wy;		float accuracy;
+	float maxiter;	float frames;	int objs;	int step;	
+
+	vec3 LightDir;	float occrange;		vec3 LightSource; float AmbientLight;
+	vec3 col1;		float LightColor;	vec3 col2;		float LightSpecular;
+	vec3 FogColor;	float EmissiveColor;vec3 vcamera;	float SpecularPower;
+	float ccol_;	float type;			float sine;		float layer_;	
+	float Alpha;	bool shadow;		bool reflection; float FogEnabled;
+	float occwidth;	float depth;		int objstart;	int b5;
+};
+
+struct Model
+{
+	vec3 centre;
+	bool hidden;
+	vec3 rotcentre; 
+	float mtype; //0 = cube 1 = sphere
+	vec3 mdim ;
+	float mbound;
+	vec4 color;
+	mat4 objrot; 
+	vec4 orient;
+	vec4 raycam;
+	vec3 wx;	float dum0;
+	vec3 wy;	float dum1;
+	vec3 wz;	float dum2;
+	vec4 lightdir;
+	float EmissiveColor; float dum3; float dum4; float dum5;
+};
+layout(std430, binding=6) buffer Modelbuffer	{Model model[10];};
+
+uint gx	=	gl_GlobalInvocationID.x;
+uint gy	=	gl_GlobalInvocationID.y;
+int ifound = 0;
+float	mbdist	= accuracy;
+vec3	v0;
+float mbfine; 
+float lmax[10];
+vec3 vstart;
+vec3 rayt ;
+bool tobetuned[10];
+bool skip[10];
+
+bool cube(vec3 v, int m)
+{
+	float dx = dot((v - model[m].centre), model[m].wx);
+	float dy = dot((v - model[m].centre), model[m].wy);
+	float dz = dot((v - model[m].centre), model[m].wz);
+	if ((abs(dx) <  model[m].mdim.x) && (abs(dy) <  model[m].mdim.y) && (abs(dz) <  model[m].mdim.z))
+		return true;
+	else
+		return false;
+}
+
+bool tune()
+{
+	float l1 = 100;
+	vec3 vfine;
+	for (int m = objstart; m < objs; m++)
+	{
+		mbfine = mbdist; 
+
+		if(tobetuned[m])
+		{
+			float binary = 0.5f;
+			mbfine		-= accuracy * binary;
+			vfine		= vstart + rayt * mbfine;
+
+			for (int i = 0; (i < 10); i++)
+			{
+				vfine		= vstart + rayt * mbfine;
+				binary = binary / 2.0f;
+				
+//cube
+				if (model[m].mtype == 0)
+				{
+					if (cube(vfine, m))
+						mbfine -= accuracy * binary;
+					else 
+						mbfine += accuracy * binary;
+				}
+//sphere
+				if (model[m].mtype == 1)				
+				{
+					if (length(vfine - model[m].centre) < model[m].mdim.x)
+						mbfine -= accuracy * binary;
+					else 
+						mbfine += accuracy * binary;
+				}
+			}
+		}
+		if (mbfine < l1)
+		{
+			v0 = vstart + rayt * mbfine;   
+			l1 = length(rayt * mbfine);
+			ifound = m;
+		}
+	}
+	return true;
+}
+
+bool grossfind()
+{	
+	float pre = 0;
+	float lmin = 100;
+	bool local = false;
+	bool first = false;
+	while (mbdist < 6) 
+	{
+		for (int m = objstart; m < objs; m++)
+		{
+			tobetuned[m] = false;
+			if (model[m].hidden == false)
+			{
+				v0 = vstart + rayt * mbdist;
+//cube
+				if (model[m].mtype == 0)
+				{
+					if (cube(v0, m))
+					{
+						if (first) {mbdist = 100; break;}
+						tobetuned[m] = true;
+						local = true;
+					}
+					else
+					{
+						pre = length(v0 - model[m].centre) - model[m].mbound;
+						if (pre < lmin) lmin = pre;
+					}
+				}
+//plane
+				if (model[m].mtype == 2)
+				{
+					vec3 N = normalize(model[m].raycam.xyz);
+					vec3 O = camera - model[m].rotcentre.xyz;
+					vec3 D = rayt;
+					lmax[m] = -(dot(N,O) ) / dot(N,D);
+					if (lmax[m] > 0)   
+					{
+						if (length(camera - v0) > lmax[m])
+						{
+							if (first) {mbdist = 100; break;}
+							tobetuned[m] = true;
+							local = true;
+						}
+						else
+						{
+							pre = lmax[m] - length(camera - v0);
+							if (pre < lmin)
+								lmin = pre;
+						}
+					}
+				}
+//sphere
+				if (model[m].mtype == 1)
+					if (length(v0 - model[m].centre) < model[m].mdim.x)
+					{
+						if (first) {mbdist = 100; break;}
+						tobetuned[m] = true;
+						local = true;
+					}
+				else
+					{
+						pre = length(v0 - model[m].centre) - model[m].mbound;
+						if (pre < lmin) lmin = pre;
+					}
+
+				if (local)
+				{
+					return true;
+				}
+			}
+		}
+		mbdist += max(lmin, accuracy);
+		first = false;
+	}	
+	return false;
+}
+
+void main()
+{
+	rayt = -normalize(LightDir);
+	vstart = position[gy].col[gx].xyz;
+	if ((position[gy].col[gx].w) != 0) 
+	{
+		if (grossfind())
+		{
+			tune();
+			mcolors[gy].col[gx].w	= 0;
+		}
+		else
+			mcolors[gy].col[gx].w	= 1;
+	}
+}

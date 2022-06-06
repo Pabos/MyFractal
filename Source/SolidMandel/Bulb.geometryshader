@@ -1,0 +1,66 @@
+#version 430 core
+ 
+layout (local_size_x = 32, local_size_y = 24, local_size_z = 1 ) in;
+layout(std430, binding=4) buffer Preposition	{ vec4 preposition[]; };
+layout(std430, binding=5) buffer Position		{ vec4 position[]; };
+layout(std430, binding=6) buffer Postposition	{ vec4 postposition[]; };
+layout(std430, binding=7) buffer Framebuffer	{ vec4 frame[]; };
+layout(std430, binding=8) buffer Indexbuffer	{ int frameindex[]; };
+layout(std430, binding=1) buffer Computebuffer	{ 
+	float	order;
+	float	phase;
+	float	cam;	
+	int		f2;	
+};
+
+
+void main()
+{	
+	uint rlen	= 32 * 32;
+	uint index  = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * rlen;
+	
+	bool ret;	if (position[index].w >= 1)				ret = true; else ret = false;
+	
+	bool retl;	if (position[index + 1].w >= 1)			retl = true; else retl = false;
+	bool retr;	if (position[index - 1].w >= 1)			retr = true; else retr = false;
+	bool retu;	if (position[index - 1024].w >= 1)		retu = true; else retu = false;
+	bool retd;	if (position[index + 1024].w >= 1)		retd = true; else retd = false;
+
+	bool retlu;	if (position[index - 1 - 1024].w >= 1)	retlu = true; else retlu = false;
+	bool retru;	if (position[index + 1 - 1024].w >= 1)	retru = true; else retru = false;
+	bool retld;	if (position[index - 1 + 1024].w >= 1)	retld = true; else retld = false;
+	bool retrd;	if (position[index + 1 + 1024].w >= 1)	retrd = true; else retrd = false;
+
+	bool rethigh;	if (preposition[index].w >= 1)		rethigh = true; else rethigh = false;
+	bool retlow;	if (postposition[index].w >= 1)		retlow = true; else retlow = false;
+
+	bool border = ret && (	!retl	||	!retr	||	!retu	||	!retd	||
+							!retlu	||	!retru	||	!retld	||	!retrd);
+	if (border)
+	{
+		
+		int temp		= atomicAdd(f2, 1);
+		frame[temp]		= vec4(position[index]);
+		position[index].w = 2;
+
+		if(preposition[index].w == 1){
+			temp		= atomicAdd(f2, 1);
+			frame[temp]	= vec4(preposition[index]);}
+		return;
+	}
+
+	if (ret && (!rethigh || !retlow))
+	{
+		int temp		= atomicAdd(f2, 1);
+		frame[temp]		= vec4(position[index]);
+		return;
+	}
+	
+	if (ret && (preposition[index].w == 2))
+	{
+		int temp		= atomicAdd(f2, 1);
+		frame[temp]		= vec4(position[index]);
+		return;
+	}
+
+}

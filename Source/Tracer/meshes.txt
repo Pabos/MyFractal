@@ -1,0 +1,3 @@
+2
+piramid.txt
+cube.txt

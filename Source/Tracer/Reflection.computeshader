@@ -1,0 +1,228 @@
+#version 440 core
+#define LSIZEX 16
+layout (local_size_x = LSIZEX, local_size_y = LSIZEX + 3 / 4, local_size_z = 1 ) in;
+struct Varray
+{
+	vec4 col[1024];
+};
+layout(std430, binding=0) buffer Positionbuffer	{Varray Position[1024];};
+layout(std430, binding=3) buffer Colors			{Varray mcolors[1024];};
+layout(std430, binding=4) buffer Fragments0		{Varray fragments[];};
+layout(std430, binding=5) buffer Fragments1		{Varray fragcol[];};
+layout(std430, binding=2) buffer Computebuffer	{ 
+
+	vec3 camera;	float dmin;
+	vec3 raycam;	float dmax;
+	vec3 wx;		float steps;
+	vec3 wy;		float accuracy;
+	float maxiter;	float frames;	int objs;	int step;	
+
+	vec3 LightDir;	float occrange;		vec3 LightSource; float AmbientLight;
+	vec3 col1;		float LightColor;	vec3 col2;		float LightSpecular;
+	vec3 FogColor;	float EmissiveColor;vec3 vcamera;	float SpecularPower;
+	float ccol_;	float type;			float sine;		float layer_;	
+	float Alpha;	bool shadow;		bool reflection; float FogEnabled;
+	float occwidth;	float depth;		int objstart;	int b5;
+};
+
+struct Model
+{
+	vec3 centre;
+	bool hidden;
+	vec3 rotcentre; 
+	float mtype; //0 = cube 1 = sphere
+	vec3 mdim ;
+	float mbound;
+	vec4 color;
+	mat4 objrot; 
+	vec4 orient;
+	vec4 raycam;
+	vec3 wx;	float dum0;
+	vec3 wy;	float dum1;
+	vec3 wz;	float dum2;
+	vec4 lightdir;
+	float EmissiveColor; float Specular; float Spower; float dum5;
+};
+layout(std430, binding=6) buffer Modelbuffer	{Model model[10];};
+
+uint gx	=	gl_GlobalInvocationID.x;
+uint gy	=	gl_GlobalInvocationID.y;
+int ifound = 0;
+float	mbdist	= accuracy;
+vec3	v0;
+float mbfine; 
+float lmax[10];
+vec3 vstart;
+vec3 rayt ;
+bool tobetuned[10];
+vec4 pts[9];
+vec3	color;
+
+bool cube(vec3 v, int m)
+{
+	float dx = dot((v - model[m].centre), model[m].wx);
+	float dy = dot((v - model[m].centre), model[m].wy);
+	float dz = dot((v - model[m].centre), model[m].wz);
+	if ((abs(dx) <  model[m].mdim.x) && (abs(dy) <  model[m].mdim.y) && (abs(dz) <  model[m].mdim.z))
+		return true;
+	else
+		return false;
+}
+
+bool tune()
+{
+	float l1 = 100;
+	vec3 vfine;
+	for (int m = objstart; m < objs; m++)
+	{
+		mbfine = mbdist; 
+
+		if(tobetuned[m])
+		{
+			float binary = 0.5f;
+			mbfine		-= accuracy * binary;
+			vfine		= vstart + rayt * mbfine;
+
+			for (int i = 0; (i < 10); i++)
+			{
+				vfine		= vstart + rayt * mbfine;
+				binary = binary / 2.0f;
+				
+				//cube
+				if (model[m].mtype == 0)
+				{
+					if (cube(vfine, m))
+						mbfine -= accuracy * binary;
+					else 
+						mbfine += accuracy * binary;
+				}
+				//sphere
+				if (model[m].mtype == 1)				
+				{
+					if (length(vfine - model[m].centre) < model[m].mdim.x)
+						mbfine -= accuracy * binary;
+					else 
+						mbfine += accuracy * binary;
+				}
+				if (mbfine < l1)
+				{
+					v0 = vstart + rayt * mbfine;   
+					l1 = length(rayt * mbfine);
+					ifound = m;
+				}
+			}
+		}
+
+	}
+	return true;
+}
+
+bool grossfind()
+{	
+		float pre;
+		float lmin = 100;
+		bool local = false;
+
+	while (mbdist < 6) 
+	{
+		for (int m = objstart; m < objs; m++)
+		{
+			tobetuned[m] = false;
+			if(model[m].hidden == false)
+			{
+				if (int(Position[gy].col[gx].w - 1.0) != m)
+				{
+					v0 = vstart + rayt * mbdist;
+//cube
+					if (model[m].mtype == 0)
+					{
+						if (cube(v0, m))
+							{
+								tobetuned[m] = true;
+								local = true;
+							}
+						else
+							{
+								pre = length(v0 - model[m].centre) - model[m].mbound;
+								if (pre < lmin) lmin = pre;
+							}
+					}
+//sphere
+					if (model[m].mtype == 1)
+						if (length(v0 - model[m].centre) < model[m].mdim.x)
+						{
+							tobetuned[m] = true;
+							local = true;
+						}
+					else
+						if (length(v0 - model[m].centre) > model[m].mbound)
+						{
+							pre = length(v0 - model[m].centre) - model[m].mbound;
+							if (pre < lmin) lmin = pre;
+						}
+
+					if (local)
+					{
+						return true;
+					}
+				}
+			}	
+		}
+		mbdist += max(lmin, accuracy);
+	}	
+	return false;
+}
+
+//-----------------------------------------------------------------------------
+// Structure definitions
+//-----------------------------------------------------------------------------
+struct ColorPair
+{	vec3 Diffuse;
+	vec3 Specular;};
+//-----------------------------------------------------------------------------
+// Compute per-pixel lighting.
+ColorPair ComputePerPixelLights(vec3 E, vec3 N, vec4 p0)
+{
+	ColorPair result;
+	vec3 L 				= normalize(LightDir);
+	vec3 H 				= normalize(E + L);
+	float dt 			= max(0,dot(N, L));
+	result.Diffuse		= vec3(AmbientLight);
+	result.Diffuse		+= vec3(LightColor) * dt * vec4(mcolors[gy].col[gx]).w;
+	result.Diffuse		*= vec3(model[int(p0.w) - 1].EmissiveColor) + 1.0;    // ???? +1 ?????
+	result.Specular		= vec3(0.0f);
+	if (dt != 0)
+	  result.Specular	+= vec3(model[int(p0.w) - 1].Specular) * pow(max(0,dot(H,N)), model[int(p0.w) - 1].Spower);//  * max(vec4(mcolors[gy].col[gx]).w, 0.2);
+	return result;
+}
+
+void main()
+{
+	vstart			= Position[gy].col[gx].xyz;
+	//pts[0]			= Position[gy].col[gx];
+	//pts[1]			= Position[gy].col[gx + 1];
+	//pts[8]			= Position[gy - 1].col[gx + 1];
+	vec3 Normals	= fragments[gy].col[gx].xyz;
+	rayt			= reflect(normalize(vstart-camera), Normals);
+
+	if ((Position[gy].col[gx].w) != 0) 
+	{
+		if (grossfind())
+		{
+ #define smooth
+#ifndef smooth
+		mcolors[gy].col[gx].xyz	= mix(model[ifound].color.xyz, mcolors[gy].col[gx].xyz, model[int(Position[gy].col[gx].w) - 1].color.w);
+#else
+		vec4	Matcolor = vec4(mcolors[gy].col[gx]);  ////????
+		vec3 posToEye			= +vcamera - pts[0].xyz;
+		posToEye				= -vcamera + pts[0].xyz;
+		ColorPair lightResult	= ComputePerPixelLights(normalize(posToEye), -Normals, pts[0]);
+		color					= Matcolor.rgb * lightResult.Diffuse + lightResult.Specular;
+	mcolors[gy].col[gx].xyz	= mix(model[ifound].color.xyz, mcolors[gy].col[gx].xyz, model[int(Position[gy].col[gx].w) - 1].color.w);
+		//fragments[gy].col[gx]	= (vec4(steps * vec2(1.0f/512.0f * gx ,1.0f/384.0f * gy ) - vec2(1, 1), 0,1));
+		//fragcol[gy].col[gx]		= vec4(mcolors[gy].col[gx].xyz, 1);
+#endif
+		}
+
+	}
+}

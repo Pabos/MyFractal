@@ -1,0 +1,18 @@
+#version 440 core
+#define DEBUG
+
+layout(location = 0) in vec4 vertexpos;
+
+uniform mat4 MVP;
+uniform mat4 MVP1;
+
+out vec4 colorout;
+//
+void main(){
+	gl_Position	= MVP * vec4(vertexpos.xyz,1);			
+	switch ( int(vertexpos.w) )	{ 
+		case 1 : {colorout	= vec4(1,0,0,1); break;}
+		case 2 : {colorout	= vec4(0,1,0,1); break;}
+		case 3 : {colorout	= vec4(0,0,1,1); break;}
+		default : break;}
+}

@@ -1,0 +1,7 @@
+6
+world.bmp
+cboardred.bmp
+cboardgreen.bmp
+cboardblue.bmp
+testo.bmp
+paolo.bmp

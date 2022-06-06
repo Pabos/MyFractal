@@ -1,0 +1,10 @@
+
+#version 440 core
+#define DEBUG
+
+in vec3 colorout;
+out vec3 color;
+
+void main(){
+	color	= colorout;
+}

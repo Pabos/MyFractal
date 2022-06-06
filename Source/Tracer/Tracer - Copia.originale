@@ -1,0 +1,578 @@
+﻿#version 460 core
+
+#define LSIZEX 32
+#define LSIZEY 20
+layout (local_size_x = LSIZEX, local_size_y = LSIZEY, local_size_z = 1 ) in;
+struct Varray{ vec4 col[1024]; };
+layout(std430, binding=0) buffer Positionbuffer	{Varray position[];};
+layout(std430, binding=4) buffer Colorbufffer	{Varray colorbuffer[];};
+layout(std430, binding=5) buffer Coordbuffer	{Varray coordbuffer[];};
+layout(std430, binding=11) buffer Shadowbuffer	{Varray shadowbuffer[];};
+//layout(std430, binding=13) buffer Helpbuffer	{Varray helpbuffer[];};
+layout(std430, binding=8) buffer Tex0buffer		{vec3 tex0buffer[];};
+layout(std430, binding=2) buffer Computebuffer	{ 
+	vec3 camera;		int objstart;
+	float steps;		int objs;				int reflection;		int obj;
+	vec3 wx;			float shadow;
+	vec3 wy;			float shadow1;	
+	vec3 LightDir_;		float AmbientLight;
+	vec3 LightSource;	float Alpha;
+	float LightColor;	float LightSpecular;	float EmissiveColor;	float SpecularPower;
+	vec3 dum0;			int filter0;
+	float dt;			int iter;				int maxframes;			float timer;
+	float dum1;			float test;				int glass;				int filter1;
+	vec4 dum3;
+	mat4 camrot;
+};
+
+struct Model	{
+
+	vec3 centre;		int hidden;
+	vec3 speed;			float mtype;
+	vec3 spin;			float omega;
+	vec3 mdim;			int text;
+	vec3 rotcentre;		float mass;
+	vec4 orient;
+	vec4 invorient;
+	int objnum;			int meshstart;		int meshstop;	int mmesh;
+	float EmissiveColor; float Specular;	float Spower;	float intersect;
+	vec4 color;
+	vec2 debug;								float raystep;	float refindex;
+	vec4 dum0;
+	vec4 dum1;
+	vec4 dum2;
+	vec4 dum3;
+	vec4 dum4;
+};
+layout(std430, binding=6) buffer Modelbuffer	{Model model[];};
+
+struct Text{int textnum; float width; float height; int start;};
+layout(std430, binding=9) buffer Texturesbuffer		{Text text[];};
+
+struct Mesh { vec3 v0; float dum0; vec3 v1; float dum1; vec3 v2; float dum2; vec3 N; float dum3;};
+layout(std430, binding=7) buffer Meshbuffer		{Mesh mesh[];};
+
+
+struct MESHlist {int meshstart; int meshstop; float dm0; int dum1;};
+layout(std430, binding=10) buffer Meshlistbuffer	{MESHlist meshlist[];};
+
+uint gx	=	gl_GlobalInvocationID.x;
+uint gy	=	gl_GlobalInvocationID.y;
+vec3 coord;
+int ifound;
+int ifounds[20];
+vec3 vfound[20];
+vec3 normalfound[20];
+vec3 colorfound[20];
+vec3 rayts[20];
+vec3 rayt, tcolor;
+vec3 normal,normal_, nortemp;
+float dis = 0;
+int pass_, pass0;
+vec3 LightDir;
+/////////////////////////////
+struct Tune
+{	bool bfound; int mfound; };
+////////////////////////////////
+void qmul( in vec4 q1, in vec4 q2, out vec4 rot)
+{
+    rot =  vec4(q2.xyz * q1.w + q1.xyz * q2.w + cross(q1.xyz, q2.xyz), q1.w * q2.w - dot(q1.xyz, q2.xyz));
+}
+///////////////////////////////
+vec3 rotate_vector(in vec3 v, in vec4 r)
+{
+    vec4 r_c = r * vec4(-1, -1, -1, 1);
+	vec4 ret_; qmul(vec4(v, 0), r_c, ret_);
+    vec4 rot;  qmul(r, ret_, rot);
+	return rot.xyz;
+}
+////////////////////////////////
+vec4 q_conj(vec4 q)
+{
+    return vec4(-q.x, -q.y, -q.z, q.w);
+}
+////////////////////////////////
+float sphere(in vec3 v, in vec3 rayt, in int m, in bool refract)	{
+	Model mod = model[m];
+	float r = mod.mdim.x;
+	vec3 oc = v - mod.centre;
+
+	float b = dot(oc, rayt);
+	float c = dot(oc,oc) - r * r;
+	float d = b * b - c;
+	if (d > 0)	{
+		float t = (-b - sqrt(d));
+		if (refract) t = (-b + sqrt(d));
+		vec3 localv = v + rayt * t - mod.centre;
+		nortemp = normalize(localv);
+		if(mod.text != 0) {		//texture mapping
+			float width = text[mod.text].width; 
+			float height = text[mod.text].height;
+			vec3 p = rotate_vector(localv, mod.invorient);
+			vec3 norp = normalize(p);
+			vec3 pprojection = vec3(p.x, p.y, 0);
+			float alfa = acos(p.x / length(pprojection)) / (3.14159265);
+			float updown = sign(dot(cross( vec3(1,0,0), norp), vec3(0,0,1))) + 1;
+			float longitude;
+			if( updown == 0) longitude = width - alfa * width / 2; else longitude = width - (2 - alfa) * width / 2;
+			float latitude = (asin(norp.z) / (3.14159265 / 2) + 1) * height / 2;
+			tcolor = tex0buffer[text[mod.text].start + int(longitude) + int(width) * int(latitude)].xyz;
+		}
+		else
+			tcolor = mod.color.xyz;
+		return t;
+	}
+	else 
+		return -1000;
+}
+////////////////////////////////
+float ellipsoid(vec3 v, vec3 rayt, int m)
+{
+	Model mod = model[m];
+	float a2 = mod.mdim.x * mod.mdim.x;
+	float b2 = mod.mdim.y * mod.mdim.y;
+	float c2 = mod.mdim.z * mod.mdim.z;
+	float binary = mod.raystep;
+	float r22;
+	float t = 0;
+	while (t < 6) 
+	{
+		t += mod.raystep;
+		vec3 v_ = v + t * rayt;
+		vec3 vt = rotate_vector(v_ - mod.centre, model[m].invorient);
+		r22 = vt.x*vt.x*b2*c2 + vt.y*vt.y*a2*c2 + vt.z*vt.z*a2*b2;
+		if (r22 < 0) return -1000;
+		if (r22 < a2*b2*c2) 
+		{
+			for (int i = 0; i < 8; i++)
+			{
+				r22 = vt.x*vt.x*b2*c2 + vt.y*vt.y*a2*c2 + vt.z*vt.z*a2*b2;
+				binary = binary / 2;
+				t += binary * sign(r22 - a2*b2*c2);
+				v_ = v + t * rayt;
+				vt = rotate_vector(v_ - mod.centre, model[m].invorient);	
+			}
+			nortemp = rotate_vector(normalize(vt * vec3(1/a2,1/b2,1/c2)), mod.orient);	
+			if(model[m].text != 0) 
+			{		//texture mapping
+				float width = text[model[m].text].width; 
+				float height = text[model[m].text].height;
+				vec3 p = rotate_vector(v + rayt * t - mod.centre, model[m].invorient);
+				vec3 norp = normalize(p);
+				vec3 pprojection = vec3(p.x, p.y, 0);
+				float alfa = acos(p.x / length(pprojection)) / (3.14159265);
+				float updown = sign(dot(cross( vec3(1,0,0), norp), vec3(0,0,1))) + 1;
+				float longitude;
+				if( updown == 0) longitude = width - alfa * width / 2; else longitude = width - (2 - alfa) * width / 2;
+				float latitude = (asin(norp.z) / (3.14159265 / 2) + 1) * height / 2;
+				tcolor = tex0buffer[text[model[m].text].start + int(longitude) + int(width) * int(latitude)].xyz;
+			}
+			else
+				tcolor = model[m].color.xyz;
+			return t;
+		}
+	}
+	return -1000;
+}
+////////////////////////////////
+vec3 nortri;
+float plane(in vec3 v, in vec3 rayt, in int m)	{ ////// 
+	Model mod = model[m];
+	vec3 modcentre = mod.centre;
+	int newm = int(mod.intersect);
+	if (mod.intersect != 0)
+	{
+		modcentre = model[newm].centre;
+		mod.orient = model[newm].orient;
+	}
+	vec3 N = rotate_vector(vec3(0,1,0), mod.orient);
+	if (dot(rayt, N) > 0) return -1000;
+	float d = dot(N, modcentre);
+	float t = (dot(N, v) - d) / dot (N, -rayt);
+	vec3 P = (v + t * rayt - modcentre);  
+ 	P = rotate_vector(P, mod.invorient);
+	if (mod. mtype == 0)	if (t < 0 || abs(P.z) > mod.mdim.z || abs(P.x) > mod.mdim.x) return -1000;
+	if (mod. mtype == 5)	if (t < 0 || (length(P.xz) > mod.mdim.x)) return -1000;
+	nortemp = sign(dot(N,-rayt)) * normalize(N);
+//texture mapping
+	if(mod.text != 0) 
+	{
+		float width = text[mod.text].width; 
+		float height = text[mod.text].height;
+		vec3 p =  rotate_vector(v + rayt * t - modcentre, mod.invorient);
+		float longitude = int((p.x + 10) * width) % int(width);
+		float latitude = int((p.z + 10) * height) % int(height);
+		tcolor = tex0buffer[text[mod.text].start + int(longitude) + int(width) * int(latitude)].xyz;
+	}
+	else
+		tcolor = mod.color.xyz;	
+//texture mapping
+	return t;
+}
+//////////////////////////////
+float triangle(vec3 orig, vec3 rayt, Mesh mesh, int m, int i, bool refract)	{ 
+	vec3 modcentre = model[m].centre;
+	vec3 N; 
+	mat4 scale = mat4(vec4(model[m].mdim.x, 0 ,0, 1), vec4(0, model[m].mdim.y, 0, 1), vec4(0, 0, model[m].mdim.z, 1), vec4(0,0,0,1) );
+	vec3 v0 = rotate_vector((scale * vec4(mesh.v0, 1)).xyz, model[m].orient) + modcentre;
+	vec3 v1 = rotate_vector((scale * vec4(mesh.v1, 1)).xyz, model[m].orient) + modcentre;
+	vec3 v2 = rotate_vector((scale * vec4(mesh.v2, 1)).xyz, model[m].orient) + modcentre;
+	vec3 edge0 = v1 - v0;
+	vec3 edge1 = v2 - v0;
+	N = cross(edge0, edge1);
+	float NdotRayDirection  = dot(-N, rayt);
+	if (NdotRayDirection   < 0)	{vec3 temp = v0; v0 = v1; v1 = temp;  edge0 = v1 - v0; edge1 = v2 - v0; N = cross(edge0, edge1);}
+	float d = dot(N, v0);
+	float t = (dot(N, orig) - d) / dot (N, -rayt);
+	if (t < 0) return -1000;
+	vec3 P = (orig + t * rayt);  
+	float epsilon = -0.0001; 
+	epsilon = 0; 
+	vec3 C = cross((v1 - v0), (P - v0));
+	if (dot(N, C) < epsilon) return -1000;
+	C = cross((v2 - v1), (P - v1));
+	if (dot(N, C) < epsilon) return -1000;
+	C = cross((v0 - v2), (P - v2));
+	if (dot(N, C) < epsilon) return -1000;
+	nortri = normalize(N);	 
+	if(refract) nortri = -nortri;
+	tcolor = model[m].color.xyz;	
+	return t;
+}
+////////////////////////////////
+	//equazione toro    r22 = (vt.x * vt.x + vt.y * vt.y) - 2 * mod.mdim.x * sqrt(vt.x * vt.x + vt.y * vt.y) + mod.mdim.x * mod.mdim.x + vt.z * vt.z; 
+float thorus(vec3 v, vec3 rayt, int m) {
+	Model mod = model[m]; 
+	float r22, t = 0;
+	float R = mod.mdim.x;
+	float binary = mod.raystep;
+	vec3 v_ = v;
+	while (t < 6) 
+	{
+		t += mod.raystep;
+		v_ = v + t * rayt;
+		vec3 vt = rotate_vector(v_ - mod.centre, mod.invorient);
+		r22 = dot(vt,vt) - 2 * R * sqrt(dot(vt.xy, vt.xy)) + R * R;
+		if (r22 < 0) return -1000;
+		if ((sqrt(r22) - mod.mdim.y) < 0) 
+		{
+			for (int i = 0; i < 8; i++)
+			{
+				r22 = dot(vt,vt) - 2 * R * sqrt(dot(vt.xy, vt.xy)) + R * R;
+				binary = binary / 2;
+				t += binary * sign(sqrt(r22) - mod.mdim.y);
+				v_ = v + t * rayt;
+				vt = rotate_vector(v_ - mod.centre, mod.invorient);
+			}
+			vec3 rc = normalize(vec3(vt.x, vt.y, 0)) * mod.mdim.x;
+			nortemp = rotate_vector(normalize(vt - rc), mod.orient);
+//texture mapping
+			if(mod.text == 1) {tcolor = mod.color.xyz;}
+			else {tcolor = mod.color.xyz;}
+			return t;
+		}
+	}
+	return -1000;
+}
+////////////////////////////////
+float cone(vec3 v, vec3 rayt, int m)  {
+	Model mod = model[m]; 
+	float t = 0;
+	vec3 rayt_ = rotate_vector(rayt, mod.invorient);
+	vec3 start = rotate_vector(v - mod.centre, mod.invorient) - vec3(0, mod.mdim.y, 0);
+	float tg2 = tan(mod.mdim.x) * tan(mod.mdim.x);
+	float a = rayt_.x * rayt_.x + rayt_.z * rayt_.z - rayt_.y * rayt_.y * tg2;
+	float b = 2 * (start.x * rayt_.x + start.z * rayt_.z - start.y * rayt_.y * tg2);
+	float c = start.x * start.x + start.z * start.z  - start.y * start.y * tg2;
+	float d = b * b - 4 * a * c;
+	if (d < 0) return -1000;
+	t = (- b - sqrt(d)) / (2 * a);
+	v = start + t * rayt_;
+	if ((v.y > mod.mdim.z) || (v.y < -mod.mdim.y)) return -1000;
+	vec3 rc = vec3(0, -length(v)/cos(mod.mdim.x), 0);
+	nortemp = normalize(rotate_vector(v - rc, mod.orient));
+	tcolor = mod.color.xyz;
+	return t;
+}
+////////////////////////////////  
+float searchmes(vec3 v0, vec3 rayt, int m, bool refract)  {
+	float meshmin = 1000;
+	float t = -1000;
+	float dismesh = 0;
+	for (int i = meshlist[model[m].mmesh].meshstart; i < meshlist[model[m].mmesh].meshstop; i++)
+	{
+		dismesh = triangle(v0, rayt, mesh[i], m, i, refract);
+		if ((dismesh > 0.01) && ((dismesh - meshmin)  < +0.000001) && true)
+		{
+			meshmin = dismesh;
+			t = dismesh;
+			nortemp = nortri;
+		}
+	}
+	return t;
+}
+////////////////////////////////
+Tune raymarch(bool refract, int ifound, int pass_, vec3 vstart, vec3 rayt, bool updt)
+{	
+	Tune ret;
+	ret.bfound = false;
+	ret.mfound = -1000;
+	float lmin = 1000;
+	dis = -1000; 
+	float dismesh = -1000;
+	int intdetect = 0;
+	vec3 vtemp, colortemp;
+	for (int m = objstart; m <= objs; m++)
+		if	((!refract && (m != ifound))  ||	(refract && (m == ifound)))
+		{
+			Model mod = model[m];
+			if (mod.hidden == 0)	
+			{
+				switch ( int(mod.mtype) )	
+				{ 
+					case 0 : {dis = plane		(vstart, rayt, m);				break;}	// rectangle
+					case 1 : {dis = sphere		(vstart, rayt, m, refract);		break;}
+					case 2 : {dis = searchmes	(vstart, rayt, m, refract);		break;}
+					case 3 : {dis = thorus		(vstart, rayt ,m);				break;}
+					case 4 : {dis = cone		(vstart, rayt ,m);				break;}
+					case 5 : {dis = plane		(vstart, rayt, m);				break;}	// circle
+					case 6 : {dis = ellipsoid	(vstart, rayt, m);				break;}
+					default : break;
+				}
+				if ((dis >= 0) && (dis < lmin) )	
+				{
+					ret.bfound	= true;
+					ret.mfound	= m;
+					vtemp		= vstart + rayt * dis;
+					normal		= nortemp;
+					colortemp	= tcolor;
+					lmin		= length(rayt * dis);
+				}
+			}	
+		}
+	if(updt)
+		if(ret.bfound == true)
+		{
+			ifounds[pass_]		= ret.mfound;
+			vfound[pass_]		= vtemp;
+			normalfound[pass_]	= normal;
+			colorfound[pass_]	= colortemp;
+		}
+	return ret;
+}
+//-----------------------------------------------------------------------------
+// Structure definitions
+//-----------------------------------------------------------------------------
+struct ColorPair	{
+	vec3 Diffuse;
+	vec3 Specular;};
+
+//-----------------------------------------------------------------------------
+vec4 color;
+//-----------------------------------------------------------------------------
+// Compute per-pixel lighting.
+ColorPair ComputePerPixelLights(in vec3 E, in vec3 N, in int found, in float shadow)	{
+	ColorPair result;
+	vec3 L 				= normalize(LightDir);
+	vec3 H 				= normalize(E + L);
+	float dt 			= max(0,dot(N, L));
+	result.Diffuse		= vec3(AmbientLight);
+	result.Diffuse		+= vec3(LightColor) * dt * shadow;
+	result.Diffuse		*= vec3(model[found].EmissiveColor);    // ???? +1 ????? + 1.0
+	result.Specular		= vec3(0.0f);
+	if (dt != 0) 
+		result.Specular+= vec3(model[found].Specular * shadow) * pow(max(0,dot(H,N)), model[found].Spower);
+	return result;
+}
+////////////////////////////////
+
+#define reflecting		true
+#define notreflecting	false
+#define refracting		true
+#define notrefracting	false
+vec3 newcolor;
+
+void colorshadow(in bool reflection, in float shadow, in int pass_, in vec3 vstart, in vec3 rayt, in bool updt)
+{		
+	rayt		= normalize(-LightDir);	
+	if (raymarch(notrefracting, ifounds[pass_],  pass_, vfound[pass_], rayt, updt).bfound && dot(rayt, normalfound[pass_]) > 0)
+	{
+		ColorPair	lightResult	= ComputePerPixelLights(normalize(-vstart + vfound[pass_]), -normalfound[pass_], ifounds[pass_], 1 - shadow);
+		newcolor	= colorfound[pass_] * lightResult.Diffuse + lightResult.Specular;
+		if (!reflection) shadowbuffer[gy].col[gx].x = shadow;
+	}
+	else
+	{
+		ColorPair	lightResult	= ComputePerPixelLights(normalize(-vstart + vfound[pass_]), -normalfound[pass_], ifounds[pass_], 1);
+		newcolor	= colorfound[pass_] * lightResult.Diffuse + lightResult.Specular;
+	}
+}
+////////////////////////////////
+void rayloop(inout vec3 camera_, inout float fade)
+{
+	camera_ = vfound[pass_];
+	colorshadow(reflecting, shadow1, pass_ + 1 , vfound[pass_], rayt, false);							// object casting shadow on reflected object	
+	fade = fade * (1 - model[ifounds[pass_]].color.w);
+	color.rgb	= mix(newcolor, color.rgb, 1 - fade);
+	pass_++;	
+	rayt	= reflect(normalize(vfound[pass_] - camera_), normalfound[pass_]);
+}
+////////////////////////////////
+void main()
+{
+//  helpbuffer[gy].col[gx] = vec4(8,8,8,0);
+	Tune tuneresults;
+	vec3 camera_ = camera;
+	LightDir = (camrot * vec4(LightDir_, 1)).xyz;
+	coord = (4.0f * steps / 1024.0f * vec3(ivec2(gx, gy), 0) - vec3(2.0f, 1.5f, 0));
+	vec3 ray0 = normalize(vec3(1,0,0) * coord.x + vec3(0,1,0) * coord.y - camera_); 
+	camera_ = (camrot * vec4(camera_, 1)).xyz;
+	ray0 = (camrot * vec4(ray0, 1)).xyz;
+	rayt = ray0;
+	position[gy].col[gx] = vec4(0,0,0,0);
+	shadowbuffer[gy].col[gx].x = 0; 
+	shadowbuffer[gy].col[gx].z = 0; 
+	color = vec4(0.5,0.5,0.5,0);
+
+
+	pass_ = 0;	
+	pass0 = 0;																					
+	ifound = -1; 
+	vec3 vstart = camera_ + rayt * 0.5;
+	if (raymarch(notrefracting, -1, pass_, vstart, rayt, true).bfound)
+	{ 
+		position[gy].col[gx] = vec4(vec3(0,0,0), ifounds[pass_]);
+		colorshadow(notreflecting, shadow, pass_, vstart, rayt, false);										// first object fit casting shadow
+		color.rgb	= newcolor;
+		float cosalfa = 1;
+////////////////////////////																				// refraction
+		if((glass == 1) && (model[ifounds[pass0]].refindex > 0.05))
+		{				
+			cosalfa = abs(dot(ray0, normalfound[pass0])/length(ray0));
+			rayt = refract(normalize(ray0), normalfound[pass0], 1/model[ifounds[pass0]].refindex);			//ray inside the sphere	
+			pass_++;
+			if(raymarch(refracting, ifounds[pass0],  pass_, vfound[pass0] - rayt * 0.0001, rayt, true).bfound)	// find far edge tracing inside (true)
+			{
+				ray0 = rayt;
+				rayt = refract(ray0, -normalfound[pass_], model[ifounds[pass0]].refindex);					// emerging ray
+				if (rayt == vec3(0,0,0))																	// not emerging, reflects inside
+				{
+					rayt = reflect(ray0, -normalfound[pass_]);
+					raymarch(refracting, ifounds[pass_],  pass_, vfound[pass_], rayt, true);						// find far edge tracing inside (true)
+					rayt = refract(rayt, -normalfound[pass_], 1/model[ifounds[pass0]].refindex);			// ?? emerging ray from far edge ??
+				}	
+				pass_++;;
+				if (raymarch(notrefracting, ifounds[pass0],  pass_, vfound[pass_-1], rayt, true).bfound)	// find the object behind the sphere
+				{	
+					colorshadow(notreflecting, shadow, pass_, vfound[pass_-1], rayt, false);				// casting shadow on reflected object
+					color.rgb	= newcolor * cosalfa;
+					rayt	= reflect(normalize(vfound[pass_] - camera_), normalfound[pass_]);
+
+					if((reflection > 0) && (model[ifounds[pass_]].color.w != 1)	
+					&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))		// object hit by reflected ray = object//
+					{
+						float fade = 1;
+						camera_ = vfound[pass_];
+						colorshadow(reflecting, shadow1, pass_ + 1, vfound[pass_], rayt, false);					// object casting shadow on reflected object	
+						fade = fade * (1 - model[ifounds[pass_]].color.w);
+						if((glass == 1) && (model[ifounds[pass_]].refindex > 0.05))	
+							color.rgb	= mix(newcolor * (1 - cosalfa), color.rgb, (1 - fade)); 
+						else
+							color.rgb	= mix(newcolor, color.rgb, (1 - fade));
+					}
+				}
+			}
+			else 
+				color.rgb = vec3(0.5,0.5,0.5);
+		}
+//////////////////////////////   //
+		pass_	=  pass0;	
+		float fade = 1;
+		bool go = true;	
+
+		rayt	= reflect(normalize(vfound[pass_] - camera_), normalfound[pass_]);
+		if((reflection > 0) && (model[ifounds[pass_]].color.w != 1)	
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))				// object hit by reflected ray = object//
+		{
+		rayloop(camera_, fade);
+		if ((reflection > 1) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1,  vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);
+		if ((reflection > 2) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);	
+		if ((reflection > 3) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);		
+		rayt	= reflect(normalize(vfound[pass_] - camera_), normalfound[pass_]);
+		if ((reflection > 4) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);	
+		if ((reflection > 5) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);		
+		if ((reflection > 6) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);	
+		if ((reflection > 7) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);	
+		if ((reflection > 8) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);
+		if ((reflection > 9) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);
+//#define compil
+#ifdef compil
+		if ((reflection > 10) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);
+		if ((reflection > 11) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);
+		if ((reflection > 12) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);
+		if ((reflection > 13) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);
+		if ((reflection > 14) && (model[ifounds[pass_]].color.w != 1)
+		&& (raymarch(notrefracting, ifounds[pass_],  pass_ + 1, vfound[pass_], rayt, true).bfound))
+		{
+		rayloop(camera_, fade);
+		}
+		}
+		}
+		}
+		}
+#endif
+		}
+		}
+		}
+		}
+		}
+		}
+		}
+		}
+		}
+		}
+	}
+	colorbuffer[gy].col[gx]	= color;
+	coordbuffer[gy].col[gx]	= (vec4(steps * vec2(1.0f/512.0f * gx ,1.0f/390.0f * gy ) - vec2(1, 1), 0,1));
+	return;
+}
+/////  helpbuffer[gy].col[gx] = vec4(rayt,ifounds[0]);

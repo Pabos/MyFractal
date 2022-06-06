@@ -1,0 +1,56 @@
+
+#version 440 core
+
+layout(location = 0) in vec4 position;
+layout(location = 1) in vec4 normal;
+uniform mat4 MVP;
+uniform mat4 MROT;
+uniform float maxd;
+uniform float mind;
+uniform float alight = 0.5f;
+uniform float acolor = 0.5f;
+uniform float ecolor = 0;
+uniform float spower = 16.0f;
+uniform float sine = 15.0f;
+uniform float slight = 0.5f;
+
+out vec3 colorout;
+//-----------------------------------------------------------------------------
+struct ColorPair
+{	vec3 Diffuse;
+	vec3 Specular;};
+
+//-----------------------------------------------------------------------------
+ColorPair ComputePerPixelLights(vec3 E, vec3 N)
+{
+	ColorPair result;
+	float tot = 1; 
+	float count =0;
+	float Occlusion = 1;
+
+	vec3 L 				= vec3(-1,1,1);
+	vec3 H 				= normalize(E + L);
+	float dt 			= max(0,dot(N, L));
+	result.Diffuse		=  vec3(alight);
+	result.Diffuse		+= vec3(acolor) * dt;
+	result.Diffuse		*= vec3(ecolor) + 0.5f;
+	result.Specular		= vec3(0.0f);
+	//if (dt != 0)
+	  result.Specular	+= vec3(slight) * pow(max(0,dot(H,N)), spower);
+	return result;
+}
+//
+void main(){	
+	gl_Position		= MVP * position; 
+	vec4 normal_	= MROT * normal; 
+	float distance	= length(position.xyz);
+
+	vec3 col1_	= vec3(0,0.2,0);
+	vec3 col2_	= vec3(0.5,0.5,0);
+
+	float tempdist			= -cos(sine * (distance - mind) / (maxd - mind)) * 0.5f + 0.5f;
+	vec3	Matcolor		= vec3(mix(col1_, col2_, tempdist));
+	vec3	posToEye		= -vec3(0,0,4) - position.xyz;
+	ColorPair lightResult	= ComputePerPixelLights(normalize(posToEye), normal_.xyz);
+	colorout				= Matcolor * lightResult.Diffuse + lightResult.Specular;
+}

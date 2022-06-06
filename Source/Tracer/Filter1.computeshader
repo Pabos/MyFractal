@@ -1,0 +1,81 @@
+﻿#version 440 core
+#define LSIZEX 32
+#define LSIZEY 20
+layout (local_size_x = LSIZEX, local_size_y = LSIZEY, local_size_z = 1 ) in;
+struct Varray{ vec4 col[1024]; };
+layout(std430, binding=0) buffer Positionbuffer	{Varray position[];};
+layout(std430, binding=1) buffer Filterbuffer	{Varray filterbuffer[];};
+layout(std430, binding=3) buffer Filterbuffer1	{Varray filterbuffer1[];};
+layout(std430, binding=4) buffer Colorbuffer	{Varray colorbuffer[];};
+layout(std430, binding=11) buffer Shadowbuffer	{Varray shadowbuffer[];};
+layout(std430, binding=13) buffer Helpbuffer	{Varray helpbuffer[];};
+layout(std430, binding=2) buffer Computebuffer	{ 
+	vec3 camera;		int objstart;
+	float steps;		int objs;				int reflection;		int obj;
+	vec3 wx;			float shadow;
+	vec3 wy;			float shadow1;	
+	vec3 LightDir;		float AmbientLight;
+	vec3 LightSource;	float Alpha;
+	float LightColor;	float LightSpecular;	float EmissiveColor;	float SpecularPower;
+	vec3 dum0;			int filter0;
+	float dt;			int iter;				int maxframes;			float timer;
+	float dum1;			float dum2;				int glass;				int filter1;
+	vec4 dum3;
+	mat4 camrot;
+};
+
+uint gx	=	gl_GlobalInvocationID.x;
+uint gy	=	gl_GlobalInvocationID.y;
+int span = 3;
+int loopcount = 1 + 2 * span;
+uint cgx	=	gx - span;
+uint cgy	=	gy - span;
+const float gWeights[7][7] ={
+{0,		0,		0.001,	0.001,	0.001,	0,		0},
+{0,		0.002,	0.012,	0.020,	0.012,	0.002,	0},
+{0.001,	0.012,	0.068,	0.109,	0.068,	0.012,	0.001},
+{0.001,	0.020,	0.109,	0.172,	0.109,	0.020,	0.001},
+{0.001,	0.012,	0.068,	0.109,	0.068,	0.012,	0.001},
+{0,		0.002,	0.012,	0.020,	0.012,	0.002,	0},
+{0,		0,		0.001,	0.001,	0.001,	0,		0}
+};	
+const float bWeights[7][7] ={
+{0,		0,		0.001,	0.001,	0.001,	0,		0},
+{0,		0.002,	0.012,	0.020,	0.012,	0.002,	0},
+{0.001,	0.012,	0.068,	0.109,	0.068,	0.012,	0.001},
+{0.001,	0.020,	0.109,	0.172,	0.109,	0.020,	0.001},
+{0.001,	0.012,	0.068,	0.109,	0.068,	0.012,	0.001},
+{0,		0.002,	0.012,	0.020,	0.012,	0.002,	0},
+{0,		0,		0.001,	0.001,	0.001,	0,		0}
+};	
+void main()
+{	
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////;
+	vec3 colout = vec3(0,0,0);
+	filterbuffer[gy].col[gx] = filterbuffer1[gy].col[gx];
+
+	if(filter1 == 1)
+	{
+		float weight = 0;
+		float weight_ = 0;
+		bool edge = false;
+		for( int i = 0; i < loopcount; i++)    
+		{
+			for( int y = 0; y < loopcount; y++)                                                                                                                               
+			{
+				if( (position[cgy].col[cgx].w == position[cgy + y].col[cgx + i].w) && (shadowbuffer[cgy].col[cgx].x != shadowbuffer[cgy + y].col[cgx + i].x) )   // shadow edge's smotth
+					//||   (shadowbuffer[cgy].col[cgx].z != shadowbuffer[cgy + y].col[cgx + i].z))			// shadow1
+				edge = true;
+
+				//weight_ = gWeights[i][y];
+				weight_ = 1;
+				weight += weight_;
+				colout = colout + weight_ * colorbuffer[cgy + y].col[cgx + i].xyz; 
+
+			}
+		}
+		if (edge)
+			filterbuffer[gy].col[gx]    = vec4(colout/weight, 1);
+///// helpbuffer[gy].col[gx] = vec4(weight,5,5,0);	
+	}
+}
