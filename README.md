@@ -23,3 +23,9 @@ Warning:
 The shader may run for more than 2 seconds if the accuracy is pushed too far or some inconsistencies in parameter set force it into an endless loop.
 When that happens Windows throws in an exception and the program crashes.
 It doesn’t happen on my system since I fixed most bugs affecting the problem, but on system with a slow graphic card it may still happen. It doesn’t harm the system, just need to stop and restart the program.
+
+Last but not least:
+I did everything for fun and spent a lot of time mainly on the C++ code and porting the ray tracing stuff from C++ to compute shaders.
+Concerning the formulae:
+for the most common ones, such as Mandelbulb and Mandelbox, I did them on my own, just taking some hints from this and other sites about the Distance Estimation calculation for the DE version of the shaders.
+In other cases, such as for the Pseudoklenian, I figured them out searching through several places to come up with my GLSL version and wouldn't know whom to attribute the intellectual property to.
