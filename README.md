@@ -8,6 +8,7 @@ To reload the setup files from the Program directory just delete the App folder 
 
 If everything worked, a windows will show up, like the one in the Screenshot folder.
 The program runs on my desktop on Intel I7, Windows 10 and Nvidia 1050 GTX graphic card.
+Requires GLSL version core 440 or higher.
 
 Tried it on my wife's desktop with AMD Rizen 5 and Vega graphic cards and got some troubles with the Shaders' code (sounds like the GLSL compilers aren't 100% compatible).
 I fixed the problems on the AMD graphic but did the test just on two systems and I don't know how solid the build is.
